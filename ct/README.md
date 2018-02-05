@@ -1,3 +1,8 @@
+This is a cpoy of https://github.com/google/certificate-transparency-go
+at revision 5cfe585726ad9d990d4db524d6ce2567b13e2f80.
+
+below is the original readme:
+
 This is the really early beginnings of a certificate transparency log
 client written in Go, along with a log scanner tool.
 

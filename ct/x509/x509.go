@@ -20,8 +20,8 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	// START CT CHANGES
-	"github.com/zmap/zcrypto/ct/asn1"
-	"github.com/zmap/zcrypto/ct/x509/pkix"
+	"github.com/google/certificate-transparency/go/asn1"
+	"github.com/google/certificate-transparency/go/x509/pkix"
 	// END CT CHANGES
 	"encoding/pem"
 	"errors"
@@ -237,19 +237,18 @@ const (
 //    us(840) ansi-X9-62(10045) signatures(4) ecdsa-with-SHA2(3) 4 }
 
 var (
-	oidSignatureMD2WithRSA             = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 2}
-	oidSignatureMD5WithRSA             = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 4}
-	oidSignatureSHA1WithRSA            = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 5}
-	oidSignatureSHA256WithRSA          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11}
-	oidSignatureSHA384WithRSA          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 12}
-	oidSignatureSHA512WithRSA          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 13}
-	oidSignatureDSAWithSHA1            = asn1.ObjectIdentifier{1, 2, 840, 10040, 4, 3}
-	oidSignatureDSAWithSHA256          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 4, 3, 2}
-	oidSignatureECDSAWithSHA1          = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 1}
-	oidSignatureECDSAWithSHA256        = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
-	oidSignatureECDSAWithSHA384        = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}
-	oidSignatureECDSAWithSHA512        = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 4}
-	oidExtensionCTPrecertificatePoison = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11129, 2, 4, 3}
+	oidSignatureMD2WithRSA      = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 2}
+	oidSignatureMD5WithRSA      = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 4}
+	oidSignatureSHA1WithRSA     = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 5}
+	oidSignatureSHA256WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11}
+	oidSignatureSHA384WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 12}
+	oidSignatureSHA512WithRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 13}
+	oidSignatureDSAWithSHA1     = asn1.ObjectIdentifier{1, 2, 840, 10040, 4, 3}
+	oidSignatureDSAWithSHA256   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 4, 3, 2}
+	oidSignatureECDSAWithSHA1   = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 1}
+	oidSignatureECDSAWithSHA256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
+	oidSignatureECDSAWithSHA384 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}
+	oidSignatureECDSAWithSHA512 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 4}
 )
 
 func getSignatureAlgorithmFromOID(oid asn1.ObjectIdentifier) SignatureAlgorithm {
@@ -524,7 +523,6 @@ type Certificate struct {
 	// CRL Distribution Points
 	CRLDistributionPoints []string
 
-	IsPrecert         bool
 	PolicyIdentifiers []asn1.ObjectIdentifier
 }
 
@@ -618,10 +616,6 @@ func (c *Certificate) CheckSignatureFrom(parent *Certificate) (err error) {
 	}
 
 	// TODO(agl): don't ignore the path length constraint.
-
-	if parent.Subject.String() != c.Issuer.String() {
-		return errors.New(fmt.Sprintf("Mis-match issuer/subject (%s!=%s)", parent.Subject.String(), c.Issuer.String()))
-	}
 
 	return parent.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature)
 }
@@ -1128,13 +1122,6 @@ func parseCertificate(in *certificate) (*Certificate, error) {
 				} else if v.Method.Equal(oidAuthorityInfoAccessIssuers) {
 					out.IssuingCertificateURL = append(out.IssuingCertificateURL, string(v.Location.Bytes))
 				}
-			}
-		} else if e.Id.Equal(oidExtensionCTPrecertificatePoison) {
-			if e.Value[0] == 5 && e.Value[1] == 0 {
-				out.IsPrecert = true
-				continue
-			} else {
-				return nil, UnhandledCriticalExtension{}
 			}
 		}
 

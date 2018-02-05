@@ -8,8 +8,7 @@ package pkix
 
 import (
 	// START CT CHANGES
-	"github.com/zmap/zcrypto/ct/asn1"
-	"strings"
+	"github.com/google/certificate-transparency/go/asn1"
 	// END CT CHANGES
 	"math/big"
 	"time"
@@ -121,47 +120,21 @@ func appendRDNs(in RDNSequence, values []string, oid asn1.ObjectIdentifier) RDNS
 }
 
 func (n Name) ToRDNSequence() (ret RDNSequence) {
+	ret = appendRDNs(ret, n.Country, oidCountry)
+	ret = appendRDNs(ret, n.Organization, oidOrganization)
+	ret = appendRDNs(ret, n.OrganizationalUnit, oidOrganizationalUnit)
+	ret = appendRDNs(ret, n.Locality, oidLocality)
+	ret = appendRDNs(ret, n.Province, oidProvince)
+	ret = appendRDNs(ret, n.StreetAddress, oidStreetAddress)
+	ret = appendRDNs(ret, n.PostalCode, oidPostalCode)
 	if len(n.CommonName) > 0 {
 		ret = appendRDNs(ret, []string{n.CommonName}, oidCommonName)
 	}
-	ret = appendRDNs(ret, n.OrganizationalUnit, oidOrganizationalUnit)
-	ret = appendRDNs(ret, n.Organization, oidOrganization)
-	ret = appendRDNs(ret, n.StreetAddress, oidStreetAddress)
-	ret = appendRDNs(ret, n.Locality, oidLocality)
-	ret = appendRDNs(ret, n.Province, oidProvince)
-	ret = appendRDNs(ret, n.PostalCode, oidPostalCode)
-	ret = appendRDNs(ret, n.Country, oidCountry)
 	if len(n.SerialNumber) > 0 {
 		ret = appendRDNs(ret, []string{n.SerialNumber}, oidSerialNumber)
 	}
 
 	return ret
-}
-
-func (n *Name) String() string {
-	parts := make([]string, 0, 8)
-	for _, name := range n.Names {
-		oidString := name.Type.String()
-		attrParts := make([]string, 0, 2)
-		oidName, ok := oidDotNotationToNames[oidString]
-		if ok {
-			attrParts = append(attrParts, oidName.ShortName)
-		} else {
-			attrParts = append(attrParts, oidString)
-		}
-		switch value := name.Value.(type) {
-		case string:
-			attrParts = append(attrParts, value)
-		case []byte:
-			attrParts = append(attrParts, string(value))
-		default:
-			continue
-		}
-		attrString := strings.Join(attrParts, "=")
-		parts = append(parts, attrString)
-	}
-	joined := strings.Join(parts, ", ")
-	return joined
 }
 
 // CertificateList represents the ASN.1 structure of the same name. See RFC
