@@ -1,6 +1,9 @@
 This is a cpoy of https://github.com/google/certificate-transparency-go
 at revision 5cfe585726ad9d990d4db524d6ce2567b13e2f80.
 
+Run `patch -p 0  -i ct/zcrypto_6ca0710425ec3df5e265e21ecde68a3a8db176bc_changes.diff`
+to apply diff patch to starting revision
+
 below is the original readme:
 
 This is the really early beginnings of a certificate transparency log
