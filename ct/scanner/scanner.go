@@ -3,17 +3,19 @@ package scanner
 import (
 	"container/list"
 	"fmt"
-	"log"
 	"math/big"
 	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/google/certificate-transparency/go"
-	"github.com/google/certificate-transparency/go/client"
-	"github.com/google/certificate-transparency/go/x509"
+	"github.com/op/go-logging"
+	"github.com/zmap/zcrypto/ct"
+	"github.com/zmap/zcrypto/ct/client"
+	"github.com/zmap/zcrypto/ct/x509"
 )
+
+var log *logging.Logger
 
 // Clients wishing to implement their own Matchers should implement this interface:
 type Matcher interface {
@@ -119,7 +121,7 @@ type ScannerOptions struct {
 	PrecertOnly bool
 
 	// Number of entries to request in one batch from the Log
-	BatchSize int
+	BatchSize int64
 
 	// Number of concurrent matchers to run
 	NumWorkers int
@@ -132,6 +134,11 @@ type ScannerOptions struct {
 
 	// Don't print any status messages to stdout
 	Quiet bool
+
+	// The name of the CT server we're pulling certs from
+	Name string
+
+	MaximumIndex int64
 }
 
 // Creates a new ScannerOptions struct with sensible defaults
@@ -144,6 +151,8 @@ func DefaultScannerOptions() *ScannerOptions {
 		ParallelFetch: 1,
 		StartIndex:    0,
 		Quiet:         false,
+		Name:          "https://ct.googleapis.com/rocketeer",
+		MaximumIndex:  0,
 	}
 }
 
@@ -196,17 +205,17 @@ func (s *Scanner) handleParseEntryError(err error, entryType ct.LogEntryType, in
 	case x509.NonFatalErrors:
 		s.entriesWithNonFatalErrors++
 		// We'll make a note, but continue.
-		s.Log(fmt.Sprintf("Non-fatal error in %+v at index %d: %s", entryType, index, err.Error()))
+		s.LogWarn(fmt.Sprintf("Non-fatal error in %+v at index %d of log at %s: %s", entryType, index, s.logClient.Uri, err.Error()))
 	default:
 		s.unparsableEntries++
-		s.Log(fmt.Sprintf("Failed to parse in %+v at index %d : %s", entryType, index, err.Error()))
+		s.LogError(fmt.Sprintf("Failed to parse in %+v at index %d of log at %s: %s", entryType, index, s.logClient.Uri, err.Error()))
 		return err
 	}
 	return nil
 }
 
 // Processes the given |entry| in the specified log.
-func (s *Scanner) processEntry(entry ct.LogEntry, foundCert func(*ct.LogEntry), foundPrecert func(*ct.LogEntry)) {
+func (s *Scanner) processEntry(entry ct.LogEntry, foundCert func(*ct.LogEntry, string), foundPrecert func(*ct.LogEntry, string)) {
 	atomic.AddInt64(&s.certsProcessed, 1)
 	switch entry.Leaf.TimestampedEntry.EntryType {
 	case ct.X509LogEntryType:
@@ -221,7 +230,7 @@ func (s *Scanner) processEntry(entry ct.LogEntry, foundCert func(*ct.LogEntry), 
 		}
 		if s.opts.Matcher.CertificateMatches(cert) {
 			entry.X509Cert = cert
-			foundCert(&entry)
+			foundCert(&entry, s.opts.Name)
 		}
 	case ct.PrecertLogEntryType:
 		c, err := x509.ParseTBSCertificate(entry.Leaf.TimestampedEntry.PrecertEntry.TBSCertificate)
@@ -235,7 +244,7 @@ func (s *Scanner) processEntry(entry ct.LogEntry, foundCert func(*ct.LogEntry), 
 			IssuerKeyHash:  entry.Leaf.TimestampedEntry.PrecertEntry.IssuerKeyHash}
 		if s.opts.Matcher.PrecertificateMatches(precert) {
 			entry.Precert = precert
-			foundPrecert(&entry)
+			foundPrecert(&entry, s.opts.Name)
 		}
 		s.precertsSeen++
 	}
@@ -244,7 +253,7 @@ func (s *Scanner) processEntry(entry ct.LogEntry, foundCert func(*ct.LogEntry), 
 // Worker function to match certs.
 // Accepts MatcherJobs over the |entries| channel, and processes them.
 // Returns true over the |done| channel when the |entries| channel is closed.
-func (s *Scanner) matcherJob(id int, entries <-chan matcherJob, foundCert func(*ct.LogEntry), foundPrecert func(*ct.LogEntry), wg *sync.WaitGroup) {
+func (s *Scanner) matcherJob(id int, entries <-chan matcherJob, foundCert func(*ct.LogEntry, string), foundPrecert func(*ct.LogEntry, string), wg *sync.WaitGroup) {
 	for e := range entries {
 		s.processEntry(e.entry, foundCert, foundPrecert)
 	}
@@ -266,6 +275,14 @@ func (s *Scanner) fetcherJob(id int, ranges <-chan fetchRange, entries chan<- ma
 			logEntries, err := s.logClient.GetEntries(r.start, r.end)
 			if err != nil {
 				s.Log(fmt.Sprintf("Problem fetching from log: %s", err.Error()))
+				if err.Error() == "HTTP error: 500 Internal Server Error" {
+					time.Sleep(500 * time.Millisecond)
+				}
+				continue
+			}
+			if len(logEntries) == 0 {
+				s.Log(fmt.Sprintf("Log %s gave empty slice of certificates for range %d-%d", s.logClient.Uri, r.start, r.end))
+				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 			for _, logEntry := range logEntries {
@@ -327,7 +344,19 @@ func humanTime(seconds int) string {
 
 func (s Scanner) Log(msg string) {
 	if !s.opts.Quiet {
-		log.Print(msg)
+		log.Info(msg)
+	}
+}
+
+func (s Scanner) LogWarn(msg string) {
+	if !s.opts.Quiet {
+		log.Warning(msg)
+	}
+}
+
+func (s Scanner) LogError(msg string) {
+	if !s.opts.Quiet {
+		log.Error(msg)
 	}
 }
 
@@ -338,8 +367,8 @@ func (s Scanner) Log(msg string) {
 // precert string as the arguments.
 //
 // This method blocks until the scan is complete.
-func (s *Scanner) Scan(foundCert func(*ct.LogEntry),
-	foundPrecert func(*ct.LogEntry)) error {
+func (s *Scanner) Scan(foundCert func(*ct.LogEntry, string),
+	foundPrecert func(*ct.LogEntry, string), updater chan int64) (int64, error) {
 	s.Log("Starting up...\n")
 	s.certsProcessed = 0
 	s.precertsSeen = 0
@@ -348,28 +377,44 @@ func (s *Scanner) Scan(foundCert func(*ct.LogEntry),
 
 	latestSth, err := s.logClient.GetSTH()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	s.Log(fmt.Sprintf("Got STH with %d certs", latestSth.TreeSize))
+	s.Log(fmt.Sprintf("Got %s STH with %d certs", s.opts.Name, latestSth.TreeSize))
+
+	stopIndex := s.opts.MaximumIndex
+	if s.opts.MaximumIndex == 0 {
+		stopIndex = int64(latestSth.TreeSize)
+	}
 
 	ticker := time.NewTicker(time.Second)
 	startTime := time.Now()
 	fetches := make(chan fetchRange, 1000)
 	jobs := make(chan matcherJob, 100000)
+	//done := make(chan bool)
 	go func() {
+		//oldProc := int64(0)
 		for range ticker.C {
+
 			throughput := float64(s.certsProcessed) / time.Since(startTime).Seconds()
-			remainingCerts := int64(latestSth.TreeSize) - int64(s.opts.StartIndex) - s.certsProcessed
+			remainingCerts := int64(stopIndex) - int64(s.opts.StartIndex) - s.certsProcessed
+
+			if remainingCerts == 0 {
+				updater <- int64(stopIndex)
+				return
+			}
+
 			remainingSeconds := int(float64(remainingCerts) / throughput)
 			remainingString := humanTime(remainingSeconds)
-			s.Log(fmt.Sprintf("Processed: %d certs (to index %d). Throughput: %3.2f ETA: %s\n", s.certsProcessed,
+			s.Log(fmt.Sprintf("Processed: %d %s certs (to index %d). Throughput: %3.2f ETA: %s\n", s.certsProcessed, s.opts.Name,
 				s.opts.StartIndex+int64(s.certsProcessed), throughput, remainingString))
+
+			updater <- int64(stopIndex) - remainingCerts
 		}
 	}()
 
 	var ranges list.List
-	for start := s.opts.StartIndex; start < int64(latestSth.TreeSize); {
-		end := min(start+int64(s.opts.BatchSize), int64(latestSth.TreeSize)) - 1
+	for start := s.opts.StartIndex; start < int64(stopIndex); {
+		end := min(start+int64(s.opts.BatchSize), int64(stopIndex)) - 1
 		ranges.PushBack(fetchRange{start, end})
 		start = end + 1
 	}
@@ -392,16 +437,17 @@ func (s *Scanner) Scan(foundCert func(*ct.LogEntry),
 	fetcherWG.Wait()
 	close(jobs)
 	matcherWG.Wait()
+	ticker.Stop()
 
-	s.Log(fmt.Sprintf("Completed %d certs in %s", s.certsProcessed, humanTime(int(time.Since(startTime).Seconds()))))
+	s.Log(fmt.Sprintf("Completed %d %s certs in %s", s.certsProcessed, s.opts.Name, humanTime(int(time.Since(startTime).Seconds()))))
 	s.Log(fmt.Sprintf("Saw %d precerts", s.precertsSeen))
 	s.Log(fmt.Sprintf("%d unparsable entries, %d non-fatal errors", s.unparsableEntries, s.entriesWithNonFatalErrors))
-	return nil
+	return int64(s.opts.StartIndex) + s.certsProcessed, nil
 }
 
 // Creates a new Scanner instance using |client| to talk to the log, and taking
 // configuration options from |opts|.
-func NewScanner(client *client.LogClient, opts ScannerOptions) *Scanner {
+func NewScanner(client *client.LogClient, opts ScannerOptions, scanLog *logging.Logger) *Scanner {
 	var scanner Scanner
 	scanner.logClient = client
 	// Set a default match-everything regex if none was provided:
@@ -409,5 +455,6 @@ func NewScanner(client *client.LogClient, opts ScannerOptions) *Scanner {
 		opts.Matcher = &MatchAll{}
 	}
 	scanner.opts = opts
+	log = scanLog
 	return &scanner
 }

@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/google/certificate-transparency/go/x509"
+	"github.com/zmap/zcrypto/ct/x509"
 )
+
+const kMaxTimestamp = 253402300799
 
 const (
 	issuerKeyHashLength = 32
@@ -239,6 +241,7 @@ type LogEntry struct {
 	X509Cert *x509.Certificate
 	Precert  *Precertificate
 	Chain    []ASN1Cert
+	Server   string
 }
 
 // SHA256Hash represents the output from the SHA256 hash function.
@@ -291,12 +294,24 @@ type SignedTreeHead struct {
 // add-chain and add-pre-chain methods after base64 decoding. (see RFC sections
 // 3.2 ,4.1 and 4.2)
 type SignedCertificateTimestamp struct {
-	SCTVersion Version    // The version of the protocol to which the SCT conforms
-	LogID      SHA256Hash // the SHA-256 hash of the log's public key, calculated over
+	SCTVersion Version    `json:"version"` // The version of the protocol to which the SCT conforms
+	LogID      SHA256Hash `json:"log_id"`  // the SHA-256 hash of the log's public key, calculated over
 	// the DER encoding of the key represented as SubjectPublicKeyInfo.
-	Timestamp  uint64          // Timestamp (in ms since unix epoc) at which the SCT was issued
-	Extensions CTExtensions    // For future extensions to the protocol
-	Signature  DigitallySigned // The Log's signature for this SCT
+	Timestamp  uint64          `json:"timestamp,omitempty"`  // Timestamp (in ms since unix epoc) at which the SCT was issued
+	Extensions CTExtensions    `json:"extensions,omitempty"` // For future extensions to the protocol
+	Signature  DigitallySigned `json:"signature"`            // The Log's signature for this SCT
+}
+
+type auxSignedCertificateTimestamp SignedCertificateTimestamp
+
+// MarshalJSON implements the JSON.Marshaller interface.
+func (sct *SignedCertificateTimestamp) MarshalJSON() ([]byte, error) {
+	aux := auxSignedCertificateTimestamp(*sct)
+	aux.Timestamp = sct.Timestamp / 1000 // convert ms to sec
+	if aux.Timestamp > kMaxTimestamp {
+		aux.Timestamp = 0
+	}
+	return json.Marshal(&aux)
 }
 
 func (s SignedCertificateTimestamp) String() string {

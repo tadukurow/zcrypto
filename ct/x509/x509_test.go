@@ -14,8 +14,8 @@ import (
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	// START CT CHANGES
-	"github.com/google/certificate-transparency/go/asn1"
-	"github.com/google/certificate-transparency/go/x509/pkix"
+	"github.com/zmap/zcrypto/ct/asn1"
+	"github.com/zmap/zcrypto/ct/x509/pkix"
 	// END CT CHANGES
 	"encoding/base64"
 	"encoding/hex"
